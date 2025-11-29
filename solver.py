@@ -55,7 +55,6 @@ def get_working_model():
     except Exception as e:
         print(f"DEBUG: Could not list models: {e}")
     
-    # Hardcoded fallback if the list fails entirely
     return "models/gemini-1.5-flash"
 
 def get_page_content(url):
@@ -76,9 +75,17 @@ def get_page_content(url):
             return "", ""
 
 def llm_generate_solution(question_text):
-    system_prompt = "You are a Python Data Analyst bot. Return ONLY valid Python code. Define variable 'result'."
+    # UPDATED PROMPT: Explicitly warn against returning objects
+    system_prompt = """
+    You are a Python Data Analyst bot. 
+    1. Write a Python script to solve the problem.
+    2. Define a variable 'result' with the final answer.
+    3. 'result' MUST be a string, integer, or boolean.
+    4. 'result' CANNOT be a Response object or a DataFrame.
+    5. If downloading a file, 'result' should be the extracted content, not the request object.
+    Return ONLY valid Python code.
+    """
     
-    # Get the specific model (FLASH)
     model_name = get_working_model()
     print(f"DEBUG: Using model {model_name}")
 
@@ -98,6 +105,28 @@ def execute_generated_code(code_str):
         return local_scope.get("result", "Error: No result var")
     except Exception as e:
         return f"Execution Error: {str(e)}"
+
+def sanitize_answer(answer):
+    """
+    Ensures the answer is JSON serializable.
+    Converts Response objects, Numpy types, etc. into strings/ints.
+    """
+    try:
+        # If it's a Request Response object (the specific error you had)
+        if hasattr(answer, 'text') and hasattr(answer, 'status_code'):
+            return answer.text
+        
+        # If it's a Numpy number (common in data analysis)
+        if hasattr(answer, 'item'):
+            return answer.item()
+            
+        # If it's a Pandas DataFrame/Series
+        if hasattr(answer, 'to_dict'):
+            return str(answer)
+            
+        return answer
+    except Exception as e:
+        return str(answer)
 
 def run_quiz_solver(start_url, email, secret):
     print(f"DEBUG: Starting solver for {start_url}", flush=True)
@@ -138,10 +167,12 @@ def run_quiz_solver(start_url, email, secret):
             print("DEBUG: Code generated. Executing...")
             
             # Execute Code
-            answer = execute_generated_code(code)
-            print(f"Calculated Answer: {answer}")
-
-            if hasattr(answer, 'item'): answer = answer.item()
+            raw_answer = execute_generated_code(code)
+            print(f"DEBUG: Raw Answer Type: {type(raw_answer)}")
+            
+            # --- NEW: SANITIZE ANSWER ---
+            answer = sanitize_answer(raw_answer)
+            print(f"Calculated Answer (Sanitized): {answer}")
             
             payload = {"email": email, "secret": secret, "url": current_url, "answer": answer}
             
