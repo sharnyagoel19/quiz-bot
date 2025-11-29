@@ -8,3 +8,4 @@ numpy
 pdfplumber
 beautifulsoup4
 python-multipart
+SpeechRecognition

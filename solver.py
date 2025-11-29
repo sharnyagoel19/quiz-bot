@@ -86,20 +86,25 @@ def llm_generate_solution(question_text, html_snippet, model_name, current_url):
     CURRENT PAGE URL: {current_url}
     
     CRITICAL RULES:
-    1. **FILES & LINKS**: 
+    1. **IMPORTS**: 
+       - You MUST write all imports at the top of your script.
+       - Example: `import pandas as pd`, `import requests`, `import speech_recognition`.
+       - DO NOT assume libraries are already imported.
+    
+    2. **FILES & LINKS**: 
        - Look at the 'HTML Snippet' below to find the ACTUAL filenames (in href tags).
        - Do NOT guess 'data.csv'. Use the filename found in the HTML.
        - Combine relative links with the base URL using `urllib.parse.urljoin`.
     
-    2. **SCRAPING TASKS**: 
+    3. **SCRAPING TASKS**: 
        - If asked to "Scrape [LINK]", you must download that link.
        - Use `requests.get(full_url).text` to get the content.
 
-    3. **SHELL COMMANDS**:
+    4. **SHELL COMMANDS**:
        - If the question asks to "Run a command" (like 'uv', 'pip', 'grep'), use `subprocess.run`.
        - Capture the output and set it to `result`.
     
-    4. **OUTPUT**:
+    5. **OUTPUT**:
        - Write a complete Python script.
        - Define a variable `result` with the final answer.
        - Return ONLY valid Python code.
