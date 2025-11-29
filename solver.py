@@ -27,33 +27,19 @@ else:
 
 def get_working_model():
     """
-    Priority List:
-    1. Gemini 1.5 Flash (Best for Free Tier)
-    2. Gemini Pro (Backup)
+    Priority: Gemini 1.5 Flash (Free & Fast)
     """
     try:
         print("DEBUG: Checking available models...")
         available_models = list(genai.list_models())
-        
-        # 1. Look specifically for the standard FLASH model first
         for m in available_models:
             if 'gemini-1.5-flash' in m.name and 'latest' not in m.name:
-                print(f"DEBUG: Selected Priority Model: {m.name}")
                 return m.name
-        
-        # 2. Look for ANY Flash model
         for m in available_models:
             if 'flash' in m.name and 'generateContent' in m.supported_generation_methods:
-                print(f"DEBUG: Selected Fallback Flash: {m.name}")
                 return m.name
-
-        # 3. Last Resort: Pro
-        for m in available_models:
-             if 'gemini-1.5-pro' in m.name:
-                return m.name
-                
     except Exception as e:
-        print(f"DEBUG: Could not list models: {e}")
+        print(f"DEBUG: Model list failed: {e}")
     
     return "models/gemini-1.5-flash"
 
@@ -64,7 +50,7 @@ def get_page_content(url):
         page = browser.new_page()
         try:
             page.goto(url, timeout=60000)
-            page.wait_for_timeout(2000)
+            page.wait_for_timeout(3000) # Wait longer for JS
             body_text = page.inner_text("body")
             content = page.content()
             browser.close()
@@ -74,21 +60,42 @@ def get_page_content(url):
             print(f"DEBUG: Browser Error: {e}")
             return "", ""
 
-def llm_generate_solution(question_text):
-    # UPDATED PROMPT: Explicitly warn against returning objects
+def extract_submit_url(text, model_name):
+    """
+    Uses LLM to find the submission URL if Regex fails.
+    """
+    print("DEBUG: Asking AI to find the Submit URL...")
+    try:
+        model = genai.GenerativeModel(model_name)
+        prompt = f"""
+        Read the text below and identify the URL where the answer should be POSTed.
+        Look for phrases like "Post your answer to", "Submit to", or JSON examples.
+        Return ONLY the URL. Nothing else.
+        
+        Text:
+        {text[:4000]}
+        """
+        response = model.generate_content(prompt)
+        url = response.text.strip()
+        # Clean up if AI is chatty
+        match = re.search(r'(https?://[^\s"<>]+)', url)
+        if match:
+            return match.group(1)
+        return None
+    except Exception as e:
+        print(f"DEBUG: AI URL Extraction failed: {e}")
+        return None
+
+def llm_generate_solution(question_text, model_name):
     system_prompt = """
     You are a Python Data Analyst bot. 
     1. Write a Python script to solve the problem.
     2. Define a variable 'result' with the final answer.
     3. 'result' MUST be a string, integer, or boolean.
     4. 'result' CANNOT be a Response object or a DataFrame.
-    5. If downloading a file, 'result' should be the extracted content, not the request object.
+    5. If downloading a file, 'result' should be the extracted content.
     Return ONLY valid Python code.
     """
-    
-    model_name = get_working_model()
-    print(f"DEBUG: Using model {model_name}")
-
     try:
         model = genai.GenerativeModel(model_name)
         response = model.generate_content(f"{system_prompt}\n\nQuestion: {question_text}")
@@ -107,23 +114,13 @@ def execute_generated_code(code_str):
         return f"Execution Error: {str(e)}"
 
 def sanitize_answer(answer):
-    """
-    Ensures the answer is JSON serializable.
-    Converts Response objects, Numpy types, etc. into strings/ints.
-    """
     try:
-        # If it's a Request Response object (the specific error you had)
         if hasattr(answer, 'text') and hasattr(answer, 'status_code'):
             return answer.text
-        
-        # If it's a Numpy number (common in data analysis)
         if hasattr(answer, 'item'):
             return answer.item()
-            
-        # If it's a Pandas DataFrame/Series
         if hasattr(answer, 'to_dict'):
             return str(answer)
-            
         return answer
     except Exception as e:
         return str(answer)
@@ -131,6 +128,10 @@ def sanitize_answer(answer):
 def run_quiz_solver(start_url, email, secret):
     print(f"DEBUG: Starting solver for {start_url}", flush=True)
     
+    # Identify model once
+    model_name = get_working_model()
+    print(f"DEBUG: Using model {model_name}")
+
     current_url = start_url
     steps = 0
     while current_url and steps < 10:
@@ -140,14 +141,17 @@ def run_quiz_solver(start_url, email, secret):
         try:
             question_text, html_content = get_page_content(current_url)
             
-            # --- ROBUST URL EXTRACTION ---
+            # --- IMPROVED URL EXTRACTION ---
             submit_url = None
-            match = re.search(r'(https?://[^\s"<>]+)', question_text)
+            
+            # 1. Try Regex for obvious patterns
+            match = re.search(r'Post.*answer.*(https?://[^\s"<>]+)', question_text, re.IGNORECASE)
             if match:
                 submit_url = match.group(1)
-            else:
-                 match = re.search(r'(https?://[^\s"<>]+/submit)', html_content)
-                 if match: submit_url = match.group(1)
+            
+            # 2. If Regex failed, ask AI
+            if not submit_url:
+                submit_url = extract_submit_url(question_text, model_name)
 
             if submit_url:
                 submit_url = submit_url.strip().strip(".").strip(",")
@@ -159,25 +163,20 @@ def run_quiz_solver(start_url, email, secret):
                 break
 
             # Generate Code
-            code = llm_generate_solution(question_text)
+            code = llm_generate_solution(question_text, model_name)
             if not code:
                 print("DEBUG: Failed to generate code. Skipping.")
                 break
             
             print("DEBUG: Code generated. Executing...")
-            
-            # Execute Code
             raw_answer = execute_generated_code(code)
-            print(f"DEBUG: Raw Answer Type: {type(raw_answer)}")
-            
-            # --- NEW: SANITIZE ANSWER ---
             answer = sanitize_answer(raw_answer)
             print(f"Calculated Answer (Sanitized): {answer}")
             
             payload = {"email": email, "secret": secret, "url": current_url, "answer": answer}
             
             print(f"DEBUG: Sending POST to {submit_url}")
-            resp = requests.post(submit_url, json=payload, timeout=10)
+            resp = requests.post(submit_url, json=payload, timeout=20)
             print(f"Server Response: {resp.json()}")
             
             data = resp.json()
