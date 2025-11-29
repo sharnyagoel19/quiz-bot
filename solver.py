@@ -5,6 +5,7 @@ import json
 import requests
 import traceback
 import time
+from urllib.parse import urljoin
 
 # Try importing Google AI
 try:
@@ -26,9 +27,6 @@ else:
         print(f"DEBUG: Gemini Config Failed: {e}")
 
 def get_working_model():
-    """
-    Priority: Gemini 1.5 Flash (Free & Fast)
-    """
     try:
         print("DEBUG: Checking available models...")
         available_models = list(genai.list_models())
@@ -40,7 +38,6 @@ def get_working_model():
                 return m.name
     except Exception as e:
         print(f"DEBUG: Model list failed: {e}")
-    
     return "models/gemini-1.5-flash"
 
 def get_page_content(url):
@@ -51,7 +48,6 @@ def get_page_content(url):
         try:
             page.goto(url, timeout=60000)
             page.wait_for_timeout(5000) 
-            
             body_text = page.inner_text("body")
             content = page.content()
             browser.close()
@@ -62,44 +58,44 @@ def get_page_content(url):
             return "", ""
 
 def extract_submit_url(html_content, model_name):
-    """
-    Uses LLM to find the submission URL in the HTML.
-    """
     print("DEBUG: Asking AI to find the Submit URL in HTML...")
     try:
         model = genai.GenerativeModel(model_name)
         prompt = f"""
         Analyze the HTML below and identify the URL where the answer should be POSTed.
-        1. Look for <form action="..."> tags.
-        2. Look for text saying "Post your answer to...".
-        3. Look for JSON examples containing a URL.
-        
         Return ONLY the URL. No markdown.
-        
         HTML Snippet:
         {html_content[:8000]} 
         """
         response = model.generate_content(prompt)
         url = response.text.strip()
-        print(f"DEBUG: AI suggested URL raw text: '{url}'")
-        
-        # Clean up if AI is chatty
         match = re.search(r'(https?://[^\s"<>]+)', url)
         if match:
             return match.group(1)
+        # Check for relative paths like /submit
+        match_rel = re.search(r'(/[a-zA-Z0-9\-_]+)', url)
+        if match_rel:
+            return match_rel.group(1)
         return None
     except Exception as e:
         print(f"DEBUG: AI URL Extraction failed: {e}")
         return None
 
-def llm_generate_solution(question_text, model_name):
-    system_prompt = """
+def llm_generate_solution(question_text, model_name, current_url):
+    # UPDATED PROMPT: We now pass the current_url so it resolves links correctly
+    system_prompt = f"""
     You are a Python Data Analyst bot. 
+    
+    CONTEXT:
+    The current page URL is: {current_url}
+    If you see relative links (like '/demo-scrape-data'), you MUST resolve them against the current page URL using 'urllib.parse.urljoin'.
+    
+    GOAL:
     1. Write a Python script to solve the problem.
     2. Define a variable 'result' with the final answer.
     3. 'result' MUST be a string, integer, or boolean.
-    4. 'result' CANNOT be a Response object or a DataFrame.
-    5. If downloading a file, 'result' should be the extracted content.
+    4. If downloading a file, use 'requests'.
+    
     Return ONLY valid Python code.
     """
     try:
@@ -143,29 +139,33 @@ def run_quiz_solver(start_url, email, secret):
         print(f"--- Step {steps}: Processing {current_url} ---", flush=True)
         
         try:
-            # 1. Get Content
             question_text, html_content = get_page_content(current_url)
-            print(f"DEBUG: HTML Snippet: {html_content[:500]}...") # Print start of HTML
+            print(f"DEBUG: HTML Snippet: {html_content[:200]}...")
             
-            # 2. Extract Submit URL
             submit_url = None
             
-            # Strategy A: Regex on Text
+            # Strategy A: Regex
             match = re.search(r'Post.*answer.*(https?://[^\s"<>]+)', question_text, re.IGNORECASE)
             if match:
                 submit_url = match.group(1)
             
-            # Strategy B: AI on HTML
+            # Strategy B: AI
             if not submit_url:
-                submit_url = extract_submit_url(html_content, model_name)
+                raw_url = extract_submit_url(html_content, model_name)
+                if raw_url:
+                    # If AI returns a relative path like /submit, join it
+                    if raw_url.startswith("/"):
+                        submit_url = urljoin(current_url, raw_url)
+                    elif "http" in raw_url:
+                        submit_url = raw_url
 
-            # Strategy C: Safety Net (Guess the URL)
+            # Strategy C: Fallback Guess
             if not submit_url:
                 print("DEBUG: Extraction failed. Attempting Fallback to /submit")
-                # e.g., https://site.com/demo -> https://site.com/submit
-                base_match = re.search(r'(https?://[^/]+)', current_url)
-                if base_match:
-                    submit_url = base_match.group(1) + "/submit"
+                # Clean base URL logic
+                parsed = re.match(r'(https?://[^/]+)', current_url)
+                if parsed:
+                    submit_url = parsed.group(1) + "/submit"
                     print(f"DEBUG: Guessed Fallback URL: {submit_url}")
 
             if submit_url:
@@ -173,8 +173,9 @@ def run_quiz_solver(start_url, email, secret):
 
             print(f"DEBUG: Final Submit URL is {submit_url}")
             
-            # 3. Generate Code
-            code = llm_generate_solution(question_text, model_name)
+            # Pass current_url to the LLM so it knows the base domain
+            code = llm_generate_solution(question_text, model_name, current_url)
+            
             if not code:
                 print("DEBUG: Failed to generate code. Skipping.")
                 break
@@ -193,6 +194,10 @@ def run_quiz_solver(start_url, email, secret):
             data = resp.json()
             if data.get("correct") and "url" in data:
                 current_url = data["url"]
+            elif "url" in data:
+                 # Even if wrong, if they gave us a new URL, take it (Skip logic)
+                 print("DEBUG: Answer incorrect, but new URL provided. Moving on...")
+                 current_url = data["url"]
             else:
                 current_url = None
                 
