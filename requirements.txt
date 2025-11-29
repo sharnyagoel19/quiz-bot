@@ -1,0 +1,10 @@
+fastapi
+uvicorn
+playwright
+google-generativeai
+requests
+pandas
+numpy
+pdfplumber
+beautifulsoup4
+python-multipart
