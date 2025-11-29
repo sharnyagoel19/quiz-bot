@@ -49,7 +49,6 @@ def get_page_content(url):
         browser = p.chromium.launch(headless=True)
         page = browser.new_page()
         try:
-            # INCREASED TIMEOUT to 5 seconds for scraping pages
             page.goto(url, timeout=60000)
             page.wait_for_timeout(5000) 
             
@@ -69,7 +68,6 @@ def extract_submit_url(html_content, model_name):
     print("DEBUG: Asking AI to find the Submit URL in HTML...")
     try:
         model = genai.GenerativeModel(model_name)
-        # We pass the HTML structure now, not just text
         prompt = f"""
         Analyze the HTML below and identify the URL where the answer should be POSTed.
         1. Look for <form action="..."> tags.
@@ -83,6 +81,7 @@ def extract_submit_url(html_content, model_name):
         """
         response = model.generate_content(prompt)
         url = response.text.strip()
+        print(f"DEBUG: AI suggested URL raw text: '{url}'")
         
         # Clean up if AI is chatty
         match = re.search(r'(https?://[^\s"<>]+)', url)
@@ -134,8 +133,6 @@ def sanitize_answer(answer):
 
 def run_quiz_solver(start_url, email, secret):
     print(f"DEBUG: Starting solver for {start_url}", flush=True)
-    
-    # Identify model once
     model_name = get_working_model()
     print(f"DEBUG: Using model {model_name}")
 
@@ -148,29 +145,34 @@ def run_quiz_solver(start_url, email, secret):
         try:
             # 1. Get Content
             question_text, html_content = get_page_content(current_url)
-            print(f"DEBUG: Page Content Length: {len(html_content)}")
+            print(f"DEBUG: HTML Snippet: {html_content[:500]}...") # Print start of HTML
             
-            # 2. Extract Submit URL (Prioritize HTML extraction)
+            # 2. Extract Submit URL
             submit_url = None
             
-            # Regex attempt on Text
+            # Strategy A: Regex on Text
             match = re.search(r'Post.*answer.*(https?://[^\s"<>]+)', question_text, re.IGNORECASE)
             if match:
                 submit_url = match.group(1)
             
-            # Fallback: AI attempt on HTML (More robust)
+            # Strategy B: AI on HTML
             if not submit_url:
                 submit_url = extract_submit_url(html_content, model_name)
+
+            # Strategy C: Safety Net (Guess the URL)
+            if not submit_url:
+                print("DEBUG: Extraction failed. Attempting Fallback to /submit")
+                # e.g., https://site.com/demo -> https://site.com/submit
+                base_match = re.search(r'(https?://[^/]+)', current_url)
+                if base_match:
+                    submit_url = base_match.group(1) + "/submit"
+                    print(f"DEBUG: Guessed Fallback URL: {submit_url}")
 
             if submit_url:
                 submit_url = submit_url.strip().strip(".").strip(",")
 
-            print(f"DEBUG: Submit URL is {submit_url}")
+            print(f"DEBUG: Final Submit URL is {submit_url}")
             
-            if not submit_url:
-                print("DEBUG: No submit URL found. Stopping.")
-                break
-
             # 3. Generate Code
             code = llm_generate_solution(question_text, model_name)
             if not code:
