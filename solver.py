@@ -27,8 +27,8 @@ else:
         print(f"DEBUG: Gemini Config Failed: {e}")
 
 def get_working_model():
+    # Priority: Gemini 1.5 Flash
     try:
-        print("DEBUG: Checking available models...")
         available_models = list(genai.list_models())
         for m in available_models:
             if 'gemini-1.5-flash' in m.name and 'latest' not in m.name:
@@ -47,7 +47,7 @@ def get_page_content(url):
         page = browser.new_page()
         try:
             page.goto(url, timeout=60000)
-            page.wait_for_timeout(5000) 
+            page.wait_for_timeout(4000) 
             body_text = page.inner_text("body")
             content = page.content()
             browser.close()
@@ -70,36 +70,41 @@ def extract_submit_url(html_content, model_name):
         response = model.generate_content(prompt)
         url = response.text.strip()
         match = re.search(r'(https?://[^\s"<>]+)', url)
-        if match:
-            return match.group(1)
+        if match: return match.group(1)
         match_rel = re.search(r'(/[a-zA-Z0-9\-_]+)', url)
-        if match_rel:
-            return match_rel.group(1)
+        if match_rel: return match_rel.group(1)
         return None
     except Exception as e:
         print(f"DEBUG: AI URL Extraction failed: {e}")
         return None
 
 def llm_generate_solution(question_text, model_name, current_url):
-    # UPDATED PROMPT: Fixes the "Secret Code" hallucination
+    # SYSTEM PROMPT: HARDENED FOR URLS AND SCRAPING
     system_prompt = f"""
     You are a Python Data Analyst bot. 
     
-    CONTEXT:
-    The current page URL is: {current_url}
+    CURRENT PAGE URL: {current_url}
     
-    CRITICAL INSTRUCTIONS:
-    1. READ the 'Question Text' carefully. It might ask for a sum, a count, a specific value, OR a secret code. 
-    2. Do NOT assume the goal is always to find a "secret". If the text mentions a CSV or numbers, solve the math problem.
-    3. If there are relative links (like '/data.csv'), resolve them using 'urllib.parse.urljoin("{current_url}", link)'.
-    4. Use 'requests' to download files.
-    5. Use 'pandas' to analyze CSVs.
+    CRITICAL RULES:
+    1. **URL RESOLUTION**: 
+       - Any file or link you see (like 'data.csv', '/scrape-me', 'link') is RELATIVE.
+       - You MUST convert it to a full URL using:
+         `import urllib.parse`
+         `full_url = urllib.parse.urljoin('{current_url}', relative_link_string)`
     
-    OUTPUT:
-    - Write a complete Python script.
-    - Define a variable 'result' with the final answer.
-    - 'result' MUST be a string, integer, or boolean.
-    - Return ONLY valid Python code.
+    2. **SCRAPING TASKS**: 
+       - If asked to "Scrape [LINK]", the answer is NOT on the current page.
+       - You MUST `requests.get(full_url)` and extract the text from the response.
+    
+    3. **DATA TASKS**:
+       - If asked for a CSV/Excel, download it using the FULL URL.
+       - Load it into pandas.
+       - Perform the calculation (sum, mean, etc).
+    
+    4. **OUTPUT**:
+       - Define a variable `result` with the final answer.
+       - `result` MUST be a string, integer, or boolean.
+       - Return ONLY valid Python code.
     """
     try:
         model = genai.GenerativeModel(model_name)
@@ -113,6 +118,7 @@ def llm_generate_solution(question_text, model_name, current_url):
 def execute_generated_code(code_str):
     local_scope = {}
     try:
+        # Capture stdout to see what the bot is thinking (optional debugging)
         exec(code_str, globals(), local_scope)
         return local_scope.get("result", "Error: No result var")
     except Exception as e:
@@ -120,12 +126,9 @@ def execute_generated_code(code_str):
 
 def sanitize_answer(answer):
     try:
-        if hasattr(answer, 'text') and hasattr(answer, 'status_code'):
-            return answer.text
-        if hasattr(answer, 'item'):
-            return answer.item()
-        if hasattr(answer, 'to_dict'):
-            return str(answer)
+        if hasattr(answer, 'text') and hasattr(answer, 'status_code'): return answer.text
+        if hasattr(answer, 'item'): return answer.item()
+        if hasattr(answer, 'to_dict'): return str(answer)
         return answer
     except Exception as e:
         return str(answer)
@@ -147,8 +150,7 @@ def run_quiz_solver(start_url, email, secret):
             
             submit_url = None
             match = re.search(r'Post.*answer.*(https?://[^\s"<>]+)', question_text, re.IGNORECASE)
-            if match:
-                submit_url = match.group(1)
+            if match: submit_url = match.group(1)
             
             if not submit_url:
                 raw_url = extract_submit_url(html_content, model_name)
@@ -161,16 +163,15 @@ def run_quiz_solver(start_url, email, secret):
             if not submit_url:
                 print("DEBUG: Extraction failed. Attempting Fallback to /submit")
                 parsed = re.match(r'(https?://[^/]+)', current_url)
-                if parsed:
-                    submit_url = parsed.group(1) + "/submit"
+                if parsed: submit_url = parsed.group(1) + "/submit"
 
             if submit_url:
                 submit_url = submit_url.strip().strip(".").strip(",")
 
             print(f"DEBUG: Final Submit URL is {submit_url}")
             
+            # GENERATE CODE
             code = llm_generate_solution(question_text, model_name, current_url)
-            
             if not code:
                 print("DEBUG: Failed to generate code. Skipping.")
                 break
