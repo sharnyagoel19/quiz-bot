@@ -78,37 +78,39 @@ def extract_submit_url(html_content, model_name):
         print(f"DEBUG: AI URL Extraction failed: {e}")
         return None
 
-def llm_generate_solution(question_text, model_name, current_url):
-    # SYSTEM PROMPT: HARDENED FOR URLS AND SCRAPING
+def llm_generate_solution(question_text, html_snippet, model_name, current_url):
+    # SYSTEM PROMPT: Now includes HTML Context to find real filenames
     system_prompt = f"""
     You are a Python Data Analyst bot. 
     
     CURRENT PAGE URL: {current_url}
     
     CRITICAL RULES:
-    1. **URL RESOLUTION**: 
-       - Any file or link you see (like 'data.csv', '/scrape-me', 'link') is RELATIVE.
-       - You MUST convert it to a full URL using:
-         `import urllib.parse`
-         `full_url = urllib.parse.urljoin('{current_url}', relative_link_string)`
+    1. **FILES & LINKS**: 
+       - Look at the 'HTML Snippet' below to find the ACTUAL filenames (in href tags).
+       - Do NOT guess 'data.csv'. Use the filename found in the HTML (e.g., 'demo-audio-data.csv').
+       - Combine relative links with the base URL using `urllib.parse.urljoin`.
     
     2. **SCRAPING TASKS**: 
-       - If asked to "Scrape [LINK]", the answer is NOT on the current page.
-       - You MUST `requests.get(full_url)` and extract the text from the response.
+       - If asked to "Scrape [LINK]", you must download that link.
+       - Use `requests.get(full_url).text` to get the content.
     
-    3. **DATA TASKS**:
-       - If asked for a CSV/Excel, download it using the FULL URL.
-       - Load it into pandas.
-       - Perform the calculation (sum, mean, etc).
-    
-    4. **OUTPUT**:
+    3. **OUTPUT**:
+       - Write a complete Python script.
        - Define a variable `result` with the final answer.
-       - `result` MUST be a string, integer, or boolean.
        - Return ONLY valid Python code.
     """
+    
+    user_message = f"""
+    Question: {question_text}
+    
+    HTML Snippet (Use this to find hrefs):
+    {html_snippet[:4000]}
+    """
+    
     try:
         model = genai.GenerativeModel(model_name)
-        response = model.generate_content(f"{system_prompt}\n\nQuestion Text:\n{question_text}")
+        response = model.generate_content(f"{system_prompt}\n\n{user_message}")
         code = response.text.strip().replace("```python", "").replace("```", "")
         return code
     except Exception as e:
@@ -118,7 +120,6 @@ def llm_generate_solution(question_text, model_name, current_url):
 def execute_generated_code(code_str):
     local_scope = {}
     try:
-        # Capture stdout to see what the bot is thinking (optional debugging)
         exec(code_str, globals(), local_scope)
         return local_scope.get("result", "Error: No result var")
     except Exception as e:
@@ -146,7 +147,6 @@ def run_quiz_solver(start_url, email, secret):
         
         try:
             question_text, html_content = get_page_content(current_url)
-            print(f"DEBUG: HTML Snippet: {html_content[:200]}...")
             
             submit_url = None
             match = re.search(r'Post.*answer.*(https?://[^\s"<>]+)', question_text, re.IGNORECASE)
@@ -170,8 +170,9 @@ def run_quiz_solver(start_url, email, secret):
 
             print(f"DEBUG: Final Submit URL is {submit_url}")
             
-            # GENERATE CODE
-            code = llm_generate_solution(question_text, model_name, current_url)
+            # PASS HTML TO LLM SO IT SEES FILENAMES
+            code = llm_generate_solution(question_text, html_content, model_name, current_url)
+            
             if not code:
                 print("DEBUG: Failed to generate code. Skipping.")
                 break
