@@ -72,7 +72,6 @@ def extract_submit_url(html_content, model_name):
         match = re.search(r'(https?://[^\s"<>]+)', url)
         if match:
             return match.group(1)
-        # Check for relative paths like /submit
         match_rel = re.search(r'(/[a-zA-Z0-9\-_]+)', url)
         if match_rel:
             return match_rel.group(1)
@@ -82,25 +81,29 @@ def extract_submit_url(html_content, model_name):
         return None
 
 def llm_generate_solution(question_text, model_name, current_url):
-    # UPDATED PROMPT: We now pass the current_url so it resolves links correctly
+    # UPDATED PROMPT: Fixes the "Secret Code" hallucination
     system_prompt = f"""
     You are a Python Data Analyst bot. 
     
     CONTEXT:
     The current page URL is: {current_url}
-    If you see relative links (like '/demo-scrape-data'), you MUST resolve them against the current page URL using 'urllib.parse.urljoin'.
     
-    GOAL:
-    1. Write a Python script to solve the problem.
-    2. Define a variable 'result' with the final answer.
-    3. 'result' MUST be a string, integer, or boolean.
-    4. If downloading a file, use 'requests'.
+    CRITICAL INSTRUCTIONS:
+    1. READ the 'Question Text' carefully. It might ask for a sum, a count, a specific value, OR a secret code. 
+    2. Do NOT assume the goal is always to find a "secret". If the text mentions a CSV or numbers, solve the math problem.
+    3. If there are relative links (like '/data.csv'), resolve them using 'urllib.parse.urljoin("{current_url}", link)'.
+    4. Use 'requests' to download files.
+    5. Use 'pandas' to analyze CSVs.
     
-    Return ONLY valid Python code.
+    OUTPUT:
+    - Write a complete Python script.
+    - Define a variable 'result' with the final answer.
+    - 'result' MUST be a string, integer, or boolean.
+    - Return ONLY valid Python code.
     """
     try:
         model = genai.GenerativeModel(model_name)
-        response = model.generate_content(f"{system_prompt}\n\nQuestion: {question_text}")
+        response = model.generate_content(f"{system_prompt}\n\nQuestion Text:\n{question_text}")
         code = response.text.strip().replace("```python", "").replace("```", "")
         return code
     except Exception as e:
@@ -143,37 +146,29 @@ def run_quiz_solver(start_url, email, secret):
             print(f"DEBUG: HTML Snippet: {html_content[:200]}...")
             
             submit_url = None
-            
-            # Strategy A: Regex
             match = re.search(r'Post.*answer.*(https?://[^\s"<>]+)', question_text, re.IGNORECASE)
             if match:
                 submit_url = match.group(1)
             
-            # Strategy B: AI
             if not submit_url:
                 raw_url = extract_submit_url(html_content, model_name)
                 if raw_url:
-                    # If AI returns a relative path like /submit, join it
                     if raw_url.startswith("/"):
                         submit_url = urljoin(current_url, raw_url)
                     elif "http" in raw_url:
                         submit_url = raw_url
 
-            # Strategy C: Fallback Guess
             if not submit_url:
                 print("DEBUG: Extraction failed. Attempting Fallback to /submit")
-                # Clean base URL logic
                 parsed = re.match(r'(https?://[^/]+)', current_url)
                 if parsed:
                     submit_url = parsed.group(1) + "/submit"
-                    print(f"DEBUG: Guessed Fallback URL: {submit_url}")
 
             if submit_url:
                 submit_url = submit_url.strip().strip(".").strip(",")
 
             print(f"DEBUG: Final Submit URL is {submit_url}")
             
-            # Pass current_url to the LLM so it knows the base domain
             code = llm_generate_solution(question_text, model_name, current_url)
             
             if not code:
@@ -195,7 +190,6 @@ def run_quiz_solver(start_url, email, secret):
             if data.get("correct") and "url" in data:
                 current_url = data["url"]
             elif "url" in data:
-                 # Even if wrong, if they gave us a new URL, take it (Skip logic)
                  print("DEBUG: Answer incorrect, but new URL provided. Moving on...")
                  current_url = data["url"]
             else:
