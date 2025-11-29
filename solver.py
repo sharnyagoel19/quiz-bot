@@ -4,7 +4,8 @@ import re
 import json
 import requests
 import traceback
-# Try importing, print error if it fails
+
+# Try importing Google AI
 try:
     import google.generativeai as genai
     from playwright.sync_api import sync_playwright
@@ -18,7 +19,6 @@ GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
 if not GOOGLE_API_KEY:
     print("CRITICAL ERROR: GOOGLE_API_KEY is missing!")
 else:
-    # Configure Gemini
     try:
         genai.configure(api_key=GOOGLE_API_KEY)
     except Exception as e:
@@ -42,15 +42,23 @@ def get_page_content(url):
             return "", ""
 
 def llm_generate_solution(question_text):
-    model = genai.GenerativeModel('gemini-1.5-flash')
+    # Try the Flash model first (Fast & Free)
     system_prompt = "You are a Python Data Analyst bot. Return ONLY valid Python code. Define variable 'result'."
-    try:
-        response = model.generate_content(f"{system_prompt}\n\nQuestion: {question_text}")
-        code = response.text.strip().replace("```python", "").replace("```", "")
-        return code
-    except Exception as e:
-        print(f"DEBUG: LLM Error: {e}")
-        return ""
+    
+    models_to_try = ['gemini-1.5-flash', 'gemini-pro']
+    
+    for model_name in models_to_try:
+        try:
+            print(f"DEBUG: Trying LLM model: {model_name}")
+            model = genai.GenerativeModel(model_name)
+            response = model.generate_content(f"{system_prompt}\n\nQuestion: {question_text}")
+            code = response.text.strip().replace("```python", "").replace("```", "")
+            return code
+        except Exception as e:
+            print(f"DEBUG: Model {model_name} failed: {e}")
+            continue # Try next model
+            
+    return ""
 
 def execute_generated_code(code_str):
     local_scope = {}
@@ -61,7 +69,6 @@ def execute_generated_code(code_str):
         return f"Execution Error: {str(e)}"
 
 def run_quiz_solver(start_url, email, secret):
-    # FORCE PRINT TO STDOUT
     print(f"DEBUG: Starting solver for {start_url}", flush=True)
     
     current_url = start_url
@@ -72,37 +79,49 @@ def run_quiz_solver(start_url, email, secret):
         
         try:
             question_text, html_content = get_page_content(current_url)
-            print(f"DEBUG: Question len: {len(question_text)}")
-
-            # Find Submit URL
+            
+            # --- FIX: ROBUST URL EXTRACTION ---
             submit_url = None
-            match = re.search(r'Post your answer to (https?://[^\s]+)', question_text)
+            
+            # Regex Explanation: Look for http/https, then capture everything 
+            # UNTIL we hit a space, a quote ("), or an HTML bracket (<).
+            match = re.search(r'(https?://[^\s"<>]+)', question_text)
+            
             if match:
                 submit_url = match.group(1)
             else:
-                 # Fallback regex for link inside text
-                 match = re.search(r'(https://[^\s]+/submit)', html_content)
+                 # Fallback: Look inside the HTML
+                 match = re.search(r'(https?://[^\s"<>]+/submit)', html_content)
                  if match: submit_url = match.group(1)
 
-            if not submit_url:
-                print("DEBUG: No submit URL found. Asking LLM...")
-                # Simple fallback
-                model = genai.GenerativeModel('gemini-1.5-flash')
-                resp = model.generate_content(f"Extract the submission URL from: {question_text}")
-                submit_url = resp.text.strip()
+            # Extra cleanup just in case
+            if submit_url:
+                submit_url = submit_url.strip().strip(".").strip(",")
 
             print(f"DEBUG: Submit URL is {submit_url}")
             
+            if not submit_url:
+                print("DEBUG: No submit URL found. Stopping.")
+                break
+
+            # Generate Code
             code = llm_generate_solution(question_text)
+            if not code:
+                print("DEBUG: Failed to generate code. Skipping.")
+                break
+                
             print("DEBUG: Code generated.")
             
+            # Execute Code
             answer = execute_generated_code(code)
             print(f"Calculated Answer: {answer}")
 
             if hasattr(answer, 'item'): answer = answer.item()
             
             payload = {"email": email, "secret": secret, "url": current_url, "answer": answer}
-            resp = requests.post(submit_url, json=payload)
+            
+            print(f"DEBUG: Sending POST to {submit_url}")
+            resp = requests.post(submit_url, json=payload, timeout=10)
             print(f"Server Response: {resp.json()}")
             
             data = resp.json()
