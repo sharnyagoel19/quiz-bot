@@ -5,7 +5,7 @@ import json
 import requests
 import traceback
 import time
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlparse
 
 # Try importing Google AI
 try:
@@ -94,8 +94,12 @@ def llm_generate_solution(question_text, html_snippet, model_name, current_url):
     2. **SCRAPING TASKS**: 
        - If asked to "Scrape [LINK]", you must download that link.
        - Use `requests.get(full_url).text` to get the content.
+
+    3. **SHELL COMMANDS**:
+       - If the question asks to "Run a command" (like 'uv', 'pip', 'grep'), use `subprocess.run`.
+       - Capture the output and set it to `result`.
     
-    3. **OUTPUT**:
+    4. **OUTPUT**:
        - Write a complete Python script.
        - Define a variable `result` with the final answer.
        - Return ONLY valid Python code.
@@ -120,6 +124,8 @@ def llm_generate_solution(question_text, html_snippet, model_name, current_url):
 def execute_generated_code(code_str):
     local_scope = {}
     try:
+        # Import subprocess for the code execution context
+        import subprocess
         exec(code_str, globals(), local_scope)
         return local_scope.get("result", "Error: No result var")
     except Exception as e:
@@ -141,7 +147,7 @@ def run_quiz_solver(start_url, email, secret):
 
     current_url = start_url
     steps = 0
-    while current_url and steps < 10:
+    while current_url and steps < 15: # Increased step limit
         steps += 1
         print(f"--- Step {steps}: Processing {current_url} ---", flush=True)
         
@@ -169,19 +175,16 @@ def run_quiz_solver(start_url, email, secret):
                     elif "http" in raw_url:
                         submit_url = raw_url
 
-            # 4. Fallback Guess
-            if not submit_url:
-                print("DEBUG: Extraction failed. Attempting Fallback to /submit")
-                parsed = re.match(r'(https?://[^/]+)', current_url)
-                if parsed: submit_url = parsed.group(1) + "/submit"
+            # 4. Fallback Guess (Logic Fixed)
+            if not submit_url or "project2" in submit_url:
+                print("DEBUG: Extraction failed or invalid. Attempting Force Fallback to /submit")
+                # Parse the domain and force /submit on the root
+                parsed = urlparse(current_url)
+                # Reconstruct: https:// + domain.com + /submit
+                submit_url = f"{parsed.scheme}://{parsed.netloc}/submit"
 
             if submit_url:
                 submit_url = submit_url.strip().strip(".").strip(",")
-
-            # Safety check: Don't submit to the project page itself
-            if "project2" in submit_url and "submit" not in submit_url:
-                print("DEBUG: Warning - Detected project page as submit URL. Forcing /submit.")
-                submit_url = submit_url.replace("/project2", "/submit")
 
             print(f"DEBUG: Final Submit URL is {submit_url}")
             
