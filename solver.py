@@ -24,6 +24,24 @@ else:
     except Exception as e:
         print(f"DEBUG: Gemini Config Failed: {e}")
 
+def get_working_model():
+    """
+    Dynamically asks Google: 'What models can I use?'
+    and returns the first valid one.
+    """
+    try:
+        print("DEBUG: Listing available models...")
+        for m in genai.list_models():
+            if 'generateContent' in m.supported_generation_methods:
+                if 'gemini' in m.name:
+                    print(f"DEBUG: Found valid model: {m.name}")
+                    return m.name
+    except Exception as e:
+        print(f"DEBUG: Could not list models: {e}")
+    
+    # Fallback if list fails
+    return "models/gemini-1.5-flash"
+
 def get_page_content(url):
     print(f"DEBUG: Launching browser for {url}...")
     with sync_playwright() as p:
@@ -42,23 +60,20 @@ def get_page_content(url):
             return "", ""
 
 def llm_generate_solution(question_text):
-    # Try the Flash model first (Fast & Free)
     system_prompt = "You are a Python Data Analyst bot. Return ONLY valid Python code. Define variable 'result'."
     
-    models_to_try = ['gemini-1.5-flash', 'gemini-pro']
-    
-    for model_name in models_to_try:
-        try:
-            print(f"DEBUG: Trying LLM model: {model_name}")
-            model = genai.GenerativeModel(model_name)
-            response = model.generate_content(f"{system_prompt}\n\nQuestion: {question_text}")
-            code = response.text.strip().replace("```python", "").replace("```", "")
-            return code
-        except Exception as e:
-            print(f"DEBUG: Model {model_name} failed: {e}")
-            continue # Try next model
-            
-    return ""
+    # 1. Find a working model dynamically
+    model_name = get_working_model()
+    print(f"DEBUG: Using model {model_name}")
+
+    try:
+        model = genai.GenerativeModel(model_name)
+        response = model.generate_content(f"{system_prompt}\n\nQuestion: {question_text}")
+        code = response.text.strip().replace("```python", "").replace("```", "")
+        return code
+    except Exception as e:
+        print(f"DEBUG: LLM Generation Failed: {e}")
+        return ""
 
 def execute_generated_code(code_str):
     local_scope = {}
@@ -80,21 +95,15 @@ def run_quiz_solver(start_url, email, secret):
         try:
             question_text, html_content = get_page_content(current_url)
             
-            # --- FIX: ROBUST URL EXTRACTION ---
+            # --- ROBUST URL EXTRACTION ---
             submit_url = None
-            
-            # Regex Explanation: Look for http/https, then capture everything 
-            # UNTIL we hit a space, a quote ("), or an HTML bracket (<).
             match = re.search(r'(https?://[^\s"<>]+)', question_text)
-            
             if match:
                 submit_url = match.group(1)
             else:
-                 # Fallback: Look inside the HTML
                  match = re.search(r'(https?://[^\s"<>]+/submit)', html_content)
                  if match: submit_url = match.group(1)
 
-            # Extra cleanup just in case
             if submit_url:
                 submit_url = submit_url.strip().strip(".").strip(",")
 
@@ -109,8 +118,8 @@ def run_quiz_solver(start_url, email, secret):
             if not code:
                 print("DEBUG: Failed to generate code. Skipping.")
                 break
-                
-            print("DEBUG: Code generated.")
+            
+            print("DEBUG: Code generated. Executing...")
             
             # Execute Code
             answer = execute_generated_code(code)
