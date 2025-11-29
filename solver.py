@@ -4,6 +4,7 @@ import re
 import json
 import requests
 import traceback
+import time
 
 # Try importing Google AI
 try:
@@ -26,20 +27,35 @@ else:
 
 def get_working_model():
     """
-    Dynamically asks Google: 'What models can I use?'
-    and returns the first valid one.
+    Priority List:
+    1. Gemini 1.5 Flash (Best for Free Tier)
+    2. Gemini Pro (Backup)
     """
     try:
-        print("DEBUG: Listing available models...")
-        for m in genai.list_models():
-            if 'generateContent' in m.supported_generation_methods:
-                if 'gemini' in m.name:
-                    print(f"DEBUG: Found valid model: {m.name}")
-                    return m.name
+        print("DEBUG: Checking available models...")
+        available_models = list(genai.list_models())
+        
+        # 1. Look specifically for the standard FLASH model first
+        for m in available_models:
+            if 'gemini-1.5-flash' in m.name and 'latest' not in m.name:
+                print(f"DEBUG: Selected Priority Model: {m.name}")
+                return m.name
+        
+        # 2. Look for ANY Flash model
+        for m in available_models:
+            if 'flash' in m.name and 'generateContent' in m.supported_generation_methods:
+                print(f"DEBUG: Selected Fallback Flash: {m.name}")
+                return m.name
+
+        # 3. Last Resort: Pro
+        for m in available_models:
+             if 'gemini-1.5-pro' in m.name:
+                return m.name
+                
     except Exception as e:
         print(f"DEBUG: Could not list models: {e}")
     
-    # Fallback if list fails
+    # Hardcoded fallback if the list fails entirely
     return "models/gemini-1.5-flash"
 
 def get_page_content(url):
@@ -62,7 +78,7 @@ def get_page_content(url):
 def llm_generate_solution(question_text):
     system_prompt = "You are a Python Data Analyst bot. Return ONLY valid Python code. Define variable 'result'."
     
-    # 1. Find a working model dynamically
+    # Get the specific model (FLASH)
     model_name = get_working_model()
     print(f"DEBUG: Using model {model_name}")
 
