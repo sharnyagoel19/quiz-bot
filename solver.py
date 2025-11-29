@@ -49,8 +49,10 @@ def get_page_content(url):
         browser = p.chromium.launch(headless=True)
         page = browser.new_page()
         try:
+            # INCREASED TIMEOUT to 5 seconds for scraping pages
             page.goto(url, timeout=60000)
-            page.wait_for_timeout(3000) # Wait longer for JS
+            page.wait_for_timeout(5000) 
+            
             body_text = page.inner_text("body")
             content = page.content()
             browser.close()
@@ -60,23 +62,28 @@ def get_page_content(url):
             print(f"DEBUG: Browser Error: {e}")
             return "", ""
 
-def extract_submit_url(text, model_name):
+def extract_submit_url(html_content, model_name):
     """
-    Uses LLM to find the submission URL if Regex fails.
+    Uses LLM to find the submission URL in the HTML.
     """
-    print("DEBUG: Asking AI to find the Submit URL...")
+    print("DEBUG: Asking AI to find the Submit URL in HTML...")
     try:
         model = genai.GenerativeModel(model_name)
+        # We pass the HTML structure now, not just text
         prompt = f"""
-        Read the text below and identify the URL where the answer should be POSTed.
-        Look for phrases like "Post your answer to", "Submit to", or JSON examples.
-        Return ONLY the URL. Nothing else.
+        Analyze the HTML below and identify the URL where the answer should be POSTed.
+        1. Look for <form action="..."> tags.
+        2. Look for text saying "Post your answer to...".
+        3. Look for JSON examples containing a URL.
         
-        Text:
-        {text[:4000]}
+        Return ONLY the URL. No markdown.
+        
+        HTML Snippet:
+        {html_content[:8000]} 
         """
         response = model.generate_content(prompt)
         url = response.text.strip()
+        
         # Clean up if AI is chatty
         match = re.search(r'(https?://[^\s"<>]+)', url)
         if match:
@@ -139,19 +146,21 @@ def run_quiz_solver(start_url, email, secret):
         print(f"--- Step {steps}: Processing {current_url} ---", flush=True)
         
         try:
+            # 1. Get Content
             question_text, html_content = get_page_content(current_url)
+            print(f"DEBUG: Page Content Length: {len(html_content)}")
             
-            # --- IMPROVED URL EXTRACTION ---
+            # 2. Extract Submit URL (Prioritize HTML extraction)
             submit_url = None
             
-            # 1. Try Regex for obvious patterns
+            # Regex attempt on Text
             match = re.search(r'Post.*answer.*(https?://[^\s"<>]+)', question_text, re.IGNORECASE)
             if match:
                 submit_url = match.group(1)
             
-            # 2. If Regex failed, ask AI
+            # Fallback: AI attempt on HTML (More robust)
             if not submit_url:
-                submit_url = extract_submit_url(question_text, model_name)
+                submit_url = extract_submit_url(html_content, model_name)
 
             if submit_url:
                 submit_url = submit_url.strip().strip(".").strip(",")
@@ -162,7 +171,7 @@ def run_quiz_solver(start_url, email, secret):
                 print("DEBUG: No submit URL found. Stopping.")
                 break
 
-            # Generate Code
+            # 3. Generate Code
             code = llm_generate_solution(question_text, model_name)
             if not code:
                 print("DEBUG: Failed to generate code. Skipping.")
